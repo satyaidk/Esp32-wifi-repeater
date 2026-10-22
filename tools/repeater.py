@@ -80,10 +80,17 @@ SECRETS_EXAMPLE = CONFIG_DIR / "secrets.example"
 LOCKED_DEPENDENCIES = CONFIG_DIR / "dependencies.lock"
 
 # --- Secrets ------------------------------------------------------------------
+# Required: the network the board broadcasts, and the web UI login.
 KEY_SSID = "CONFIG_REPEATER_SETUP_AP_SSID"
 KEY_AP_PASSWORD = "CONFIG_REPEATER_SETUP_AP_PASSWORD"
 KEY_ADMIN_PASSWORD = "CONFIG_REPEATER_ADMIN_PASSWORD"
-SECRET_KEYS = (KEY_SSID, KEY_AP_PASSWORD, KEY_ADMIN_PASSWORD)
+# Optional (patch 0005): the existing Wi-Fi to repeat, and the board's address.
+KEY_UPLINK_SSID = "CONFIG_REPEATER_UPLINK_SSID"
+KEY_UPLINK_PASSWORD = "CONFIG_REPEATER_UPLINK_PASSWORD"
+KEY_AP_IP = "CONFIG_REPEATER_AP_IP"
+REQUIRED_KEYS = (KEY_SSID, KEY_AP_PASSWORD, KEY_ADMIN_PASSWORD)
+OPTIONAL_DEFAULTS = {KEY_UPLINK_SSID: "", KEY_UPLINK_PASSWORD: "", KEY_AP_IP: "192.168.4.1"}
+SECRET_KEYS = REQUIRED_KEYS + tuple(OPTIONAL_DEFAULTS)
 PLACEHOLDER_MARKER = "REPLACE_ME"
 DEFAULT_SETUP_SSID = "ESP32-Repeater-Setup"
 
@@ -116,7 +123,7 @@ def log(message: str) -> None:
 # ------------------------------------------------------------------------------
 
 def parse_secrets(text: str) -> Dict[str, str]:
-    """Parse the sdkconfig-style secrets file into {key: value}."""
+    """Parse the sdkconfig-style secrets file; optional keys get their defaults."""
     values: Dict[str, str] = {}
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
@@ -133,10 +140,10 @@ def parse_secrets(text: str) -> Dict[str, str]:
         if key in values:
             raise SecretsError(f"line {lineno}: {key} is set twice")
         values[key] = value
-    missing = [key for key in SECRET_KEYS if key not in values]
+    missing = [key for key in REQUIRED_KEYS if key not in values]
     if missing:
         raise SecretsError(f"missing keys: {', '.join(missing)}")
-    return values
+    return {**OPTIONAL_DEFAULTS, **values}
 
 
 def form_encoded_length(value: str) -> int:
@@ -182,21 +189,43 @@ def _check_password(label: str, value: str) -> List[str]:
     return errors
 
 
+def _check_ssid(label: str, value: str, allow_empty: bool) -> List[str]:
+    errors: List[str] = []
+    size = len(value.encode("utf-8"))
+    if PLACEHOLDER_MARKER in value:
+        return [f"{label}: still contains the {PLACEHOLDER_MARKER} placeholder"]
+    low = 0 if allow_empty else 1
+    if not low <= size <= SSID_MAX_BYTES:
+        errors.append(f"{label}: must be {low}-{SSID_MAX_BYTES} bytes (got {size})")
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        errors.append(f"{label}: must not contain control characters")
+    if value != value.strip():
+        errors.append(f"{label}: must not start or end with whitespace")
+    errors.extend(_check_quoting(label, value))
+    return errors
+
+
+def ap_ip_is_valid(value: str) -> bool:
+    """Same rules as ap_ip_is_valid() in the firmware (patch 0003): strict dotted
+    quad, unicast, and a usable host address in the /24 the AP always uses."""
+    parts = value.split(".")
+    if len(parts) != 4 or not all(p.isdigit() and p.isascii() and 1 <= len(p) <= 3 for p in parts):
+        return False
+    octets = [int(p) for p in parts]
+    if any(o > 255 for o in octets):
+        return False
+    if octets[0] in (0, 127) or octets[0] >= 224 or octets[:2] == [169, 254]:
+        return False
+    return 1 <= octets[3] <= 254
+
+
 def validate_secrets(values: Dict[str, str]) -> List[str]:
     """Return a list of human-readable problems (empty when valid)."""
+    values = {**OPTIONAL_DEFAULTS, **values}
     errors: List[str] = []
 
     ssid = values[KEY_SSID]
-    ssid_bytes = len(ssid.encode("utf-8"))
-    if PLACEHOLDER_MARKER in ssid:
-        errors.append(f"{KEY_SSID}: still contains the {PLACEHOLDER_MARKER} placeholder")
-    if not 1 <= ssid_bytes <= SSID_MAX_BYTES:
-        errors.append(f"{KEY_SSID}: must be 1-{SSID_MAX_BYTES} bytes (got {ssid_bytes})")
-    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in ssid):
-        errors.append(f"{KEY_SSID}: must not contain control characters")
-    if ssid != ssid.strip():
-        errors.append(f"{KEY_SSID}: must not start or end with whitespace")
-    errors.extend(_check_quoting(KEY_SSID, ssid))
+    errors.extend(_check_ssid(KEY_SSID, ssid, allow_empty=False))
 
     ap_password = values[KEY_AP_PASSWORD]
     admin_password = values[KEY_ADMIN_PASSWORD]
@@ -214,6 +243,27 @@ def validate_secrets(values: Dict[str, str]) -> List[str]:
             f"{KEY_ADMIN_PASSWORD}: must differ from {KEY_AP_PASSWORD}; everyone who "
             "joins the Wi-Fi would otherwise be able to reconfigure the router"
         )
+
+    uplink_ssid = values[KEY_UPLINK_SSID]
+    uplink_password = values[KEY_UPLINK_PASSWORD]
+    errors.extend(_check_ssid(KEY_UPLINK_SSID, uplink_ssid, allow_empty=True))
+    if uplink_password:
+        if not uplink_ssid:
+            errors.append(f"{KEY_UPLINK_PASSWORD}: is set but {KEY_UPLINK_SSID} is empty")
+        # WPA passphrase rules; an empty password means an open network.
+        errors.extend(_check_password(KEY_UPLINK_PASSWORD, uplink_password))
+    if uplink_ssid and uplink_ssid == ssid:
+        errors.append(
+            f"{KEY_SSID}: must differ from {KEY_UPLINK_SSID}; the repeater network is a "
+            "separate network and devices would confuse the two"
+        )
+
+    ap_ip = values[KEY_AP_IP]
+    if not ap_ip_is_valid(ap_ip):
+        errors.append(
+            f"{KEY_AP_IP}: '{ap_ip}' is not usable; give a dotted-quad address whose last "
+            "number is 1-254, e.g. 192.168.4.1 (a second board: 192.168.5.1)"
+        )
     return errors
 
 
@@ -227,10 +277,24 @@ def generate_password(groups: int, alphabet: str = string.ascii_lowercase + stri
 def render_secrets(ssid: str, ap_password: str, admin_password: str) -> str:
     return (
         "# Generated by `python tools/repeater.py init-secrets`. Git-ignored: never commit.\n"
-        "# Rules and meaning of each value: see config/secrets.example.\n"
+        "# Every value is explained in config/secrets.example and docs/FLASHING_GUIDE.md.\n"
+        "\n"
+        "# The Wi-Fi network the repeater broadcasts (phones and laptops join this one).\n"
         f'{KEY_SSID}="{ssid}"\n'
         f'{KEY_AP_PASSWORD}="{ap_password}"\n'
+        "\n"
+        "# Login for the web page at http://192.168.4.1 (keep it different from Wi-Fi passwords).\n"
         f'{KEY_ADMIN_PASSWORD}="{admin_password}"\n'
+        "\n"
+        "# Optional: the existing Wi-Fi to repeat. Remove the leading '# ' and fill in\n"
+        "# both lines to connect automatically on first boot; otherwise enter it later\n"
+        "# on the Getting Started page. Leave the password empty for an open network.\n"
+        f'# {KEY_UPLINK_SSID}="{PLACEHOLDER_MARKER}_existing_wifi_name"\n'
+        f'# {KEY_UPLINK_PASSWORD}="{PLACEHOLDER_MARKER}_existing_wifi_password"\n'
+        "\n"
+        "# Optional: the repeater's own address. Change only for a second board that\n"
+        "# connects to the first one (use 192.168.5.1 there).\n"
+        f'# {KEY_AP_IP}="192.168.4.1"\n'
     )
 
 
@@ -290,11 +354,31 @@ def _git_env() -> Dict[str, str]:
     return env
 
 
+def _idf_env() -> Dict[str, str]:
+    """Environment for idf.py: every git process it starts checks out with LF.
+
+    The ESP-IDF component manager fetches esp_wireguard with git and verifies it
+    against the component_hash in dependencies.lock, a hash over the checked-out
+    bytes. Git for Windows defaults to core.autocrlf=true, so a Windows checkout
+    (CRLF) hashes differently from Linux (LF) and the pinned lock fails on the
+    other OS ("The downloaded component ... is corrupted"). GIT_CONFIG_COUNT
+    (git >= 2.31) overrides the setting without touching any git config file.
+    """
+    env = _git_env()
+    count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    for key, value in (("core.autocrlf", "false"), ("core.eol", "lf")):
+        env[f"GIT_CONFIG_KEY_{count}"] = key
+        env[f"GIT_CONFIG_VALUE_{count}"] = value
+        count += 1
+    env["GIT_CONFIG_COUNT"] = str(count)
+    return env
+
+
 def run(cmd: Sequence[str], cwd: Optional[Path] = None, check: bool = True,
-        capture: bool = False) -> subprocess.CompletedProcess:
+        capture: bool = False, env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
     try:
         proc = subprocess.run(
-            list(cmd), cwd=str(cwd) if cwd else None, env=_git_env(),
+            list(cmd), cwd=str(cwd) if cwd else None, env=env or _git_env(),
             capture_output=capture, text=capture,
         )
     except FileNotFoundError as error:
@@ -646,9 +730,23 @@ def update_dependency_lock() -> None:
 # Commands
 # ------------------------------------------------------------------------------
 
+def warn_if_not_ignored(path: Path) -> None:
+    """Secrets files must never be committed; *.local names are git-ignored."""
+    probe = run(["git", "-C", str(REPO_ROOT), "check-ignore", "-q", "--", str(path)],
+                check=False, capture=True)
+    if probe.returncode == 1:
+        log(f"WARNING: {_rel(path)} is NOT git-ignored and could be committed. "
+            "Name secrets files *.local (e.g. config/board2.local).")
+
+
+def run_idf(env: Dict[str, object], *actions: str, extra: Sequence[str] = ()) -> int:
+    return run(idf_command(env, *actions, extra=extra), check=False, env=_idf_env()).returncode
+
+
 def cmd_check_secrets(args: argparse.Namespace) -> int:
-    load_secrets(Path(args.file) if args.file else SECRETS_FILE)
-    log(f"{_rel(Path(args.file) if args.file else SECRETS_FILE)} is valid")
+    path = Path(args.file).resolve() if args.file else SECRETS_FILE
+    load_secrets(path)
+    log(f"{_rel(path)} is valid")
     return 0
 
 
@@ -663,13 +761,15 @@ def cmd_init_secrets(args: argparse.Namespace) -> int:
     errors = validate_secrets(values)
     if errors:
         raise SecretsError("\n".join(errors))
+    SECRETS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SECRETS_FILE.write_text(
         render_secrets(values[KEY_SSID], values[KEY_AP_PASSWORD], values[KEY_ADMIN_PASSWORD]),
         encoding="utf-8",
     )
     log(f"wrote {_rel(SECRETS_FILE)} with random passwords (not printed here).")
-    log("Open the file to read them: the AP password joins the setup Wi-Fi, "
-        "the admin password logs in to http://192.168.4.1.")
+    log("Open the file to read them, and optionally add the Wi-Fi to repeat "
+        "(see docs/FLASHING_GUIDE.md, step 4).")
+    warn_if_not_ignored(SECRETS_FILE)
     return 0
 
 
@@ -678,16 +778,29 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_build(args: argparse.Namespace) -> int:
-    load_secrets()
+def _prepare_build(args: argparse.Namespace) -> Dict[str, object]:
+    values = load_secrets()
+    warn_if_not_ignored(SECRETS_FILE)
     env = idf_environment(args.allow_idf_mismatch)
     log(f"ESP-IDF {env['version']} at {env['path']}")
+    if SECRETS_FILE != CONFIG_DIR / "secrets.local":
+        log(f"using secrets from {_rel(SECRETS_FILE)}")
+    if values[KEY_UPLINK_SSID]:
+        log(f"build-time uplink '{values[KEY_UPLINK_SSID]}'; repeater network "
+            f"'{values[KEY_SSID]}' on {values[KEY_AP_IP]}")
+    else:
+        log(f"no build-time uplink: choose the Wi-Fi to repeat at http://{values[KEY_AP_IP]} after flashing")
     prepare()
     refresh_sdkconfig_if_inputs_changed(str(env["version"]))
-    result = run(idf_command(env, "build"), check=False)
-    if result.returncode != 0:
-        log(f"idf.py build failed with exit code {result.returncode}")
-        return result.returncode
+    return env
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    env = _prepare_build(args)
+    code = run_idf(env, "build")
+    if code != 0:
+        log(f"idf.py build failed with exit code {code}")
+        return code
     update_dependency_lock()
     out = collect_release(str(env["version"]))
     log(f"release images for {IDF_TARGET}: {_rel(out)}")
@@ -702,19 +815,22 @@ def _port_args(args: argparse.Namespace) -> List[str]:
 
 
 def cmd_flash(args: argparse.Namespace) -> int:
-    load_secrets()
-    env = idf_environment(args.allow_idf_mismatch)
-    prepare()
-    refresh_sdkconfig_if_inputs_changed(str(env["version"]))
-    actions = ["flash", "monitor"] if args.monitor else ["flash"]
-    return run(idf_command(env, *actions, extra=_port_args(args)), check=False).returncode
+    env = _prepare_build(args)
+    actions = ["flash"]
+    if args.erase:
+        # idf.py runs erase-flash before flash (order_dependencies of "flash").
+        log("--erase: wiping the whole flash first, including all saved settings")
+        actions.insert(0, "erase-flash")
+    if args.monitor:
+        actions.append("monitor")
+    return run_idf(env, *actions, extra=_port_args(args))
 
 
 def cmd_monitor(args: argparse.Namespace) -> int:
     env = idf_environment(args.allow_idf_mismatch)
     if not (bin_dir() / "CMakeCache.txt").is_file():
         raise ToolError("nothing built yet; run `python tools/repeater.py build` first")
-    return run(idf_command(env, "monitor", extra=["-p", args.port]), check=False).returncode
+    return run_idf(env, "monitor", extra=["-p", args.port])
 
 
 def cmd_erase_flash(args: argparse.Namespace) -> int:
@@ -722,7 +838,7 @@ def cmd_erase_flash(args: argparse.Namespace) -> int:
         raise ToolError("erase-flash wipes firmware AND all settings (NVS). Re-run with --yes to confirm.")
     env = idf_environment(args.allow_idf_mismatch)
     prepare()
-    return run(idf_command(env, "erase-flash", extra=["-p", args.port]), check=False).returncode
+    return run_idf(env, "erase-flash", extra=["-p", args.port])
 
 
 def cmd_info(args: argparse.Namespace) -> int:
@@ -753,48 +869,64 @@ def make_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # Shared by every command so that --secrets works with all of them.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--secrets", metavar="FILE",
+                        help="secrets file to use instead of config/secrets.local "
+                             "(e.g. config/board2.local for a second board)")
+
     def with_idf(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
         p.add_argument("--allow-idf-mismatch", action="store_true",
                        help=f"continue when the active ESP-IDF is not v{REQUIRED_IDF_VERSION}")
         return p
 
-    p = sub.add_parser("init-secrets", help="create config/secrets.local with random passwords")
-    p.add_argument("--ssid", default=DEFAULT_SETUP_SSID, help="setup AP SSID")
+    def add(name: str, help_text: str) -> argparse.ArgumentParser:
+        return sub.add_parser(name, help=help_text, parents=[common])
+
+    p = add("init-secrets", "create a secrets file with random passwords")
+    p.add_argument("--ssid", default=DEFAULT_SETUP_SSID, help="name of the network the repeater broadcasts")
     p.add_argument("--force", action="store_true", help="overwrite an existing secrets file")
     p.set_defaults(func=cmd_init_secrets)
 
-    p = sub.add_parser("check-secrets", help="validate config/secrets.local")
-    p.add_argument("--file", help="validate another file instead")
+    p = add("check-secrets", "validate the secrets file")
+    p.add_argument("--file", help="validate this file (same as --secrets)")
     p.set_defaults(func=cmd_check_secrets)
 
-    p = sub.add_parser("prepare", help="export pinned upstream and apply patches")
+    p = add("prepare", "export pinned upstream and apply patches")
     p.add_argument("--force", action="store_true", help="re-export even if up to date")
     p.set_defaults(func=cmd_prepare)
 
-    with_idf(sub.add_parser("build", help="build firmware for the classic ESP32")).set_defaults(func=cmd_build)
+    with_idf(add("build", "build firmware for the classic ESP32")).set_defaults(func=cmd_build)
 
-    p = with_idf(sub.add_parser("flash", help="build if needed and flash over USB"))
+    p = with_idf(add("flash", "build if needed and flash over USB"))
     p.add_argument("-p", "--port", required=True, help="serial port, e.g. COM5 or /dev/ttyUSB0")
     p.add_argument("-b", "--baud", type=int, help="flash baud rate (ESP-IDF default 460800)")
     p.add_argument("--monitor", action="store_true", help="open the serial monitor afterwards")
+    p.add_argument("--erase", action="store_true",
+                   help="erase the whole flash first (wipes saved settings, so the values in "
+                        "the secrets file apply again)")
     p.set_defaults(func=cmd_flash)
 
-    p = with_idf(sub.add_parser("monitor", help="open the serial monitor (115200 baud)"))
+    p = with_idf(add("monitor", "open the serial monitor (115200 baud)"))
     p.add_argument("-p", "--port", required=True)
     p.set_defaults(func=cmd_monitor)
 
-    p = with_idf(sub.add_parser("erase-flash", help="erase the whole flash chip (firmware + settings)"))
+    p = with_idf(add("erase-flash", "erase the whole flash chip (firmware + settings)"))
     p.add_argument("-p", "--port", required=True)
     p.add_argument("--yes", action="store_true", help="confirm the erase")
     p.set_defaults(func=cmd_erase_flash)
 
-    sub.add_parser("info", help="show pinned versions and paths").set_defaults(func=cmd_info)
-    sub.add_parser("clean", help="delete the build directory").set_defaults(func=cmd_clean)
+    add("info", "show pinned versions and paths").set_defaults(func=cmd_info)
+    add("clean", "delete the build directory").set_defaults(func=cmd_clean)
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    global SECRETS_FILE
     args = make_parser().parse_args(argv)
+    original = SECRETS_FILE
+    if getattr(args, "secrets", None):
+        SECRETS_FILE = Path(args.secrets).resolve()
     try:
         return args.func(args)
     except ToolError as error:
@@ -802,6 +934,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
+    finally:
+        SECRETS_FILE = original
 
 
 if __name__ == "__main__":

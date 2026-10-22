@@ -1,0 +1,141 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: satyaidk <nikadisatyanarayana@gmail.com>
+Date: Fri, 23 Oct 2026 03:14:08 +0530
+Subject: [PATCH 5/5] Optional build-time uplink and AP address
+
+Upstream only learns the uplink (the existing Wi-Fi to repeat) from the
+web UI or the serial CLI after flashing, and hard-codes the AP address
+192.168.4.1. Owners asked to put both into one local file, and a second
+board that uplinks to the first needs a different AP subnet; the
+Getting Started page even resets the address to the hard-coded value.
+
+Add Kconfig strings, supplied from the git-ignored config/secrets.local:
+
+- REPEATER_UPLINK_SSID / REPEATER_UPLINK_PASSWORD: used when NVS holds
+  no uplink, i.e. on first boot and after a factory reset. Settings
+  stored at runtime still take precedence, and the build-time password
+  is never paired with a stored SSID. Empty keeps upstream behaviour.
+- REPEATER_AP_IP (default 192.168.4.1): DEFAULT_AP_IP now follows it,
+  so the boot default and the Getting Started reset agree.
+
+_Static_assert enforces the same length limits as set_sta(); the build
+tool validates the address syntax.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/wifi_config.h   |  5 ++++-
+ main/Kconfig.projbuild  | 25 +++++++++++++++++++++++++
+ main/esp32_nat_router.c | 25 +++++++++++++++++++++++--
+ 3 files changed, 52 insertions(+), 3 deletions(-)
+
+diff --git a/include/wifi_config.h b/include/wifi_config.h
+index 4400017..4b2f43b 100644
+--- a/include/wifi_config.h
++++ b/include/wifi_config.h
+@@ -7,6 +7,7 @@
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include "esp_err.h"
++#include "sdkconfig.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -46,7 +47,9 @@ extern uint16_t connect_count;
+ extern bool ap_connect;
+ extern bool wifi_scan_active;
+ 
+-#define DEFAULT_AP_IP "192.168.4.1"
++/* Build-time AP address (CONFIG_REPEATER_AP_IP, default 192.168.4.1); every
++ * upstream use, including the Getting Started page reset, follows it. */
++#define DEFAULT_AP_IP CONFIG_REPEATER_AP_IP
+ 
+ extern uint32_t my_ip;
+ extern uint32_t my_ap_ip;
+diff --git a/main/Kconfig.projbuild b/main/Kconfig.projbuild
+index 78eae9f..03ee171 100644
+--- a/main/Kconfig.projbuild
++++ b/main/Kconfig.projbuild
+@@ -49,6 +49,31 @@ menu "Secure first-boot defaults"
+             from the upstream (STA) network, following the upstream Security
+             wiki recommendation for home networks. Undo with 'web_ui bind all'.
+ 
++    config REPEATER_UPLINK_SSID
++        string "Uplink (existing Wi-Fi) SSID, optional (0-31 bytes)"
++        default ""
++        help
++            Network the board joins as a client whenever NVS holds no uplink
++            settings (first boot, after a factory reset), so it can connect
++            without using the web UI. Empty keeps the upstream behaviour: no
++            uplink until one is set on the Getting Started page or with set_sta.
++            Values stored later at runtime take precedence.
++
++    config REPEATER_UPLINK_PASSWORD
++        string "Uplink (existing Wi-Fi) password, optional (empty or 8-63 characters)"
++        default ""
++        help
++            Passphrase for REPEATER_UPLINK_SSID. Empty means an open network.
++
++    config REPEATER_AP_IP
++        string "AP address and /24 subnet for clients"
++        default "192.168.4.1"
++        help
++            Address of the board on its own network; clients get leases in
++            the same /24. Replaces upstream's fixed 192.168.4.1, including the
++            value the Getting Started page resets to. Use a different subnet
++            on a second board that uplinks to the first (e.g. 192.168.5.1).
++
+ endmenu
+ 
+ menu "NAT Router Uplink"
+diff --git a/main/esp32_nat_router.c b/main/esp32_nat_router.c
+index e33214d..be1c2d9 100644
+--- a/main/esp32_nat_router.c
++++ b/main/esp32_nat_router.c
+@@ -72,6 +72,19 @@ _Static_assert(sizeof(CONFIG_REPEATER_SETUP_AP_PASSWORD) >= 8 + 1 &&
+ _Static_assert(sizeof(CONFIG_REPEATER_ADMIN_PASSWORD) >= 8 + 1 &&
+                sizeof(CONFIG_REPEATER_ADMIN_PASSWORD) <= 63 + 1,
+                "CONFIG_REPEATER_ADMIN_PASSWORD must be 8-63 characters (set it in config/secrets.local)");
++/* Optional build-time uplink. Same limits that set_sta()/wifi_init() apply. */
++_Static_assert(sizeof(CONFIG_REPEATER_UPLINK_SSID) <= 31 + 1,
++               "CONFIG_REPEATER_UPLINK_SSID must be at most 31 bytes");
++_Static_assert(sizeof(CONFIG_REPEATER_UPLINK_PASSWORD) == 0 + 1 ||
++               (sizeof(CONFIG_REPEATER_UPLINK_PASSWORD) >= 8 + 1 &&
++                sizeof(CONFIG_REPEATER_UPLINK_PASSWORD) <= 63 + 1),
++               "CONFIG_REPEATER_UPLINK_PASSWORD must be empty (open network) or 8-63 characters");
++_Static_assert(sizeof(CONFIG_REPEATER_UPLINK_SSID) > 0 + 1 ||
++               sizeof(CONFIG_REPEATER_UPLINK_PASSWORD) == 0 + 1,
++               "CONFIG_REPEATER_UPLINK_PASSWORD is set but CONFIG_REPEATER_UPLINK_SSID is empty");
++/* "1.1.1.1" .. "255.255.255.255"; the full syntax check is done by the build tool. */
++_Static_assert(sizeof(CONFIG_REPEATER_AP_IP) >= 7 + 1 && sizeof(CONFIG_REPEATER_AP_IP) <= 15 + 1,
++               "CONFIG_REPEATER_AP_IP must be a dotted-quad IPv4 address");
+ 
+ #include "router_globals.h"
+ #include "lwip/ip_addr.h"
+@@ -1354,9 +1367,16 @@ void app_main(void)
+ 
+ #if !CONFIG_ETH_UPLINK
+     get_config_param_blob("mac", &mac, 6);
++    /* Nothing stored yet (first boot, factory reset): fall back to the
++     * optional build-time uplink. Stored settings always win. */
++    bool uplink_from_build = false;
+     get_config_param_str("ssid", &ssid);
+     if (ssid == NULL) {
+-        ssid = param_set_default("");
++        ssid = param_set_default(CONFIG_REPEATER_UPLINK_SSID);
++        uplink_from_build = true;
++        if (ssid != NULL && ssid[0] != '\0') {
++            ESP_LOGI(TAG, "Using build-time uplink SSID '%s'", ssid);
++        }
+     }
+     get_config_param_str("ent_username", &ent_username);
+     if (ent_username == NULL) {
+@@ -1368,7 +1388,8 @@ void app_main(void)
+     }
+     get_config_param_str("passwd", &passwd);
+     if (passwd == NULL) {
+-        passwd = param_set_default("");
++        /* Never pair the build-time password with a stored SSID. */
++        passwd = param_set_default(uplink_from_build ? CONFIG_REPEATER_UPLINK_PASSWORD : "");
+     }
+ #endif
+     get_config_param_str("static_ip", &static_ip);

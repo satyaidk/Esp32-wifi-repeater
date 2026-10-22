@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: satyaidk <nikadisatyanarayana@gmail.com>
 Date: Fri, 23 Oct 2026 02:12:20 +0530
-Subject: [PATCH 3/4] cmd_router: validate SSID, AP passphrase and AP IP before
+Subject: [PATCH 3/5] cmd_router: validate SSID, AP passphrase and AP IP before
  storing
 
 set_sta(), set_ap() and set_ap_ip() back both the serial CLI and the

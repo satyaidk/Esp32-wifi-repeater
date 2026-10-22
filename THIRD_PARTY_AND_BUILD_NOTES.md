@@ -62,6 +62,12 @@ must not be published anyway.
 | `espressif/mdns` | 1.14.0 | <https://components.espressif.com/components/espressif/mdns> | Apache-2.0 (Espressif) |
 | `espressif/led_strip` | 3.1.1 | <https://components.espressif.com/components/espressif/led_strip> | Apache-2.0 (Espressif) |
 
+The `component_hash` of `esp_wireguard` in the lock (`d3845c88…`) is the hash
+of an LF checkout, computed with idf-component-manager's own `hash_dir`. A CRLF
+checkout (Git for Windows default) hashes to `d6a3aefc…` and fails
+verification, which is why `repeater.py` forces `core.autocrlf=false` for the
+git processes ESP-IDF starts.
+
 Licenses were read from the `LICENSE` file of each downloaded component
 (`build/src/managed_components/*/LICENSE`); `esp_wireguard` also declares
 `license: BSD-3-Clause` in its `idf_component.yml`.

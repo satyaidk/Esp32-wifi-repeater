@@ -21,10 +21,15 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 import repeater  # noqa: E402  (import after sys.path setup)
 from repeater import (  # noqa: E402
     KEY_ADMIN_PASSWORD,
+    KEY_AP_IP,
     KEY_AP_PASSWORD,
     KEY_SSID,
+    KEY_UPLINK_PASSWORD,
+    KEY_UPLINK_SSID,
+    OPTIONAL_DEFAULTS,
     SecretsError,
     ToolError,
+    ap_ip_is_valid,
     form_encoded_length,
     generate_password,
     is_safe_member,
@@ -38,6 +43,7 @@ from repeater import (  # noqa: E402
 
 def valid_values(**overrides):
     values = {
+        **OPTIONAL_DEFAULTS,
         KEY_SSID: "ESP32-Repeater-Setup",
         KEY_AP_PASSWORD: "wifi-pass-1234",
         KEY_ADMIN_PASSWORD: "admin-pass-5678",
@@ -143,6 +149,85 @@ class ValidateSecretsTest(unittest.TestCase):
         # 42 symbols encode to 126 bytes (fits); 43 encode to 129 (does not).
         self.assertValid(valid_values(**{KEY_ADMIN_PASSWORD: "!" * 42}))
         self.assertInvalid(valid_values(**{KEY_ADMIN_PASSWORD: "!" * 43}), "URL-encoded")
+
+
+class UplinkAndAddressTest(unittest.TestCase):
+    """Optional keys added for patch 0005."""
+
+    def errors(self, **overrides):
+        return validate_secrets(valid_values(**overrides))
+
+    def test_optional_keys_default_to_no_uplink(self):
+        values = parse_secrets(render_secrets("Setup", "wifi-pass-1234", "admin-pass-5678"))
+        self.assertEqual(values[KEY_UPLINK_SSID], "")
+        self.assertEqual(values[KEY_UPLINK_PASSWORD], "")
+        self.assertEqual(values[KEY_AP_IP], "192.168.4.1")
+
+    def test_uplink_with_password_is_valid(self):
+        self.assertEqual(self.errors(**{KEY_UPLINK_SSID: "Home WiFi", KEY_UPLINK_PASSWORD: "home-pass-99"}), [])
+
+    def test_open_uplink_is_valid(self):
+        self.assertEqual(self.errors(**{KEY_UPLINK_SSID: "Cafe Free WiFi"}), [])
+
+    def test_password_without_ssid_rejected(self):
+        self.assertTrue(any("is empty" in e for e in self.errors(**{KEY_UPLINK_PASSWORD: "home-pass-99"})))
+
+    def test_short_or_long_uplink_password_rejected(self):
+        for password in ("short", "x" * 64):
+            with self.subTest(password=password):
+                self.assertTrue(any("8-63" in e for e in self.errors(
+                    **{KEY_UPLINK_SSID: "Home", KEY_UPLINK_PASSWORD: password})))
+
+    def test_uplink_ssid_limits(self):
+        self.assertEqual(self.errors(**{KEY_UPLINK_SSID: "x" * 31}), [])
+        self.assertTrue(any("0-31 bytes" in e for e in self.errors(**{KEY_UPLINK_SSID: "x" * 32})))
+
+    def test_repeater_name_must_differ_from_uplink(self):
+        same = valid_values()[KEY_SSID]
+        self.assertTrue(any("must differ" in e for e in self.errors(**{KEY_UPLINK_SSID: same})))
+
+    def test_uncommented_template_lines_are_rejected(self):
+        # Removing the "# " from the generated template without editing it must fail.
+        text = render_secrets("Setup", "wifi-pass-1234", "admin-pass-5678")
+        text = text.replace(f"# {KEY_UPLINK_SSID}", KEY_UPLINK_SSID).replace(f"# {KEY_UPLINK_PASSWORD}", KEY_UPLINK_PASSWORD)
+        self.assertTrue(any("placeholder" in e for e in validate_secrets(parse_secrets(text))))
+
+    def test_ap_ip_rules_match_firmware(self):
+        # Same cases as tests/host/test_input_validation.c (ap_ip_is_valid).
+        for good in ("192.168.4.1", "192.168.5.1", "10.0.0.1", "172.16.5.254"):
+            self.assertTrue(ap_ip_is_valid(good), good)
+        for bad in ("garbage", "0.0.0.0", "0.1.2.3", "127.0.0.1", "169.254.1.1", "224.0.0.1",
+                    "255.255.255.255", "192.168.4.0", "192.168.4.255", "10", "10.1", "1.2.3",
+                    "1.2.3.4.5", "256.1.1.1", "1.2.3.0004", " 1.2.3.4", "1.2.3.4 ", "1..3.4",
+                    "-1.2.3.4", "1.2.3.4/24", "١.2.3.4"):
+            self.assertFalse(ap_ip_is_valid(bad), bad)
+
+    def test_invalid_ap_ip_reported(self):
+        self.assertTrue(any(KEY_AP_IP in e for e in self.errors(**{KEY_AP_IP: "192.168.4.0"})))
+
+
+class IdfEnvironmentTest(unittest.TestCase):
+    def test_git_checkouts_forced_to_lf(self):
+        env = repeater._idf_env()
+        pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual(pairs.get("core.autocrlf"), "false")
+        self.assertEqual(pairs.get("core.eol"), "lf")
+
+    def test_existing_git_config_env_is_preserved(self):
+        old = {k: repeater.os.environ.get(k) for k in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0")}
+        repeater.os.environ.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name",
+                                    "GIT_CONFIG_VALUE_0": "ci"})
+        try:
+            env = repeater._idf_env()
+            self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
+            self.assertEqual(env["GIT_CONFIG_KEY_0"], "user.name")
+            self.assertEqual(env["GIT_CONFIG_KEY_1"], "core.autocrlf")
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    repeater.os.environ.pop(key, None)
+                else:
+                    repeater.os.environ[key] = value
 
 
 class FormEncodingTest(unittest.TestCase):
@@ -253,6 +338,9 @@ class PrepareIntegrationTest(unittest.TestCase):
         http = (self.src / "components" / "http_server" / "http_server.c").read_text(encoding="utf-8")
         self.assertNotIn('"VPN query => %s"', http)
         self.assertTrue((self.src / "components" / "cmd_router" / "input_validation.h").is_file())
+        self.assertIn("CONFIG_REPEATER_UPLINK_SSID", main_c)
+        wifi_config = (self.src / "include" / "wifi_config.h").read_text(encoding="utf-8")
+        self.assertIn("#define DEFAULT_AP_IP CONFIG_REPEATER_AP_IP", wifi_config)
 
     def test_staged_files_use_lf(self):
         for relative in ("main/esp32_nat_router.c", "components/cmd_router/cmd_router.c",
@@ -307,6 +395,18 @@ class CliTest(unittest.TestCase):
             bad.write_text(render_secrets("Setup", "short", "admin-pass-5678"), encoding="utf-8")
             self.assertEqual(repeater.main(["check-secrets", "--file", str(good)]), 0)
             self.assertEqual(repeater.main(["check-secrets", "--file", str(bad)]), 2)
+
+    def test_secrets_option_selects_file_and_is_restored(self):
+        original = repeater.SECRETS_FILE
+        with tempfile.TemporaryDirectory() as tmp:
+            board2 = Path(tmp) / "board2.local"
+            self.assertEqual(repeater.main(["init-secrets", "--secrets", str(board2), "--ssid", "Repeater-2"]), 0)
+            self.assertTrue(board2.is_file())
+            self.assertEqual(parse_secrets(board2.read_text(encoding="utf-8"))[KEY_SSID], "Repeater-2")
+            self.assertEqual(repeater.main(["check-secrets", "--secrets", str(board2)]), 0)
+            # refuses to overwrite without --force
+            self.assertEqual(repeater.main(["init-secrets", "--secrets", str(board2)]), 2)
+        self.assertEqual(repeater.SECRETS_FILE, original)
 
 
 if __name__ == "__main__":

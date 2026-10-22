@@ -38,8 +38,10 @@ themselves):
 - Wi-Fi credentials are stored unencrypted in NVS; the serial command
   `show config` prints them to the local console. Physical access to the
   board is full access.
-- Firmware images built from this repository contain the setup passphrase and
-  admin password. Never publish `build/`.
+- Firmware images built from this repository contain the setup passphrase,
+  the admin password and, if you set it, your existing Wi-Fi's password.
+  Never publish `build/`, and keep every secrets file named `*.local` so git
+  ignores it.
 - Flash encryption and secure boot are not enabled.
 
 ## Hardening checklist for owners

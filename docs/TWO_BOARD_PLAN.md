@@ -20,30 +20,52 @@ flowchart LR
 Supported by configuration: board 2's uplink is simply a Wi-Fi network,
 which can be board 1's AP.
 
-### Configuration (verified against the firmware source, not on hardware)
+### Configuration with a secrets file per board (recommended)
 
-1. Set up board 1 normally: uplink = home router, AP e.g. `Repeater-1`.
-2. Build board 2's image. Each board can use its own `config/secrets.local`
-   values, or the same build for both; the setup SSID only needs to differ if
-   both boards are in setup mode at the same time.
-3. On board 2's **Getting Started** page (`http://192.168.4.1`), choose
+Verified against the firmware source and compiled; not tested on hardware.
+
+1. Board 1: `config/secrets.local` with your home Wi-Fi as uplink and its own
+   repeater network, e.g. `Repeater-1`. Flash it
+   (`python tools/repeater.py flash -p COM5 --erase`).
+2. Board 2: a second file whose name ends in `.local` (git-ignored):
+
+   ```powershell
+   python tools\repeater.py init-secrets --secrets config\board2.local --ssid "Repeater-2"
+   ```
+
+   then set in `config/board2.local`:
+
+   ```ini
+   CONFIG_REPEATER_UPLINK_SSID="Repeater-1"
+   CONFIG_REPEATER_UPLINK_PASSWORD="<board 1's repeater network password>"
+   CONFIG_REPEATER_AP_IP="192.168.5.1"
+   ```
+
+   The different AP address is required: board 2's uplink address is in
+   board 1's `192.168.4.0/24`, so board 2's own network must be another /24.
+3. Flash board 2: `python tools/repeater.py flash -p COM6 --secrets config\board2.local --erase`.
+   Its web page is at `http://192.168.5.1`.
+4. Optional: `set_wifi_country <CC>` on both boards.
+
+With patch 0005 the Getting Started page resets the AP address to the
+board's build-time value (`192.168.5.1` on board 2), not to `192.168.4.1`.
+
+### Configuration at runtime (without a second secrets file)
+
+1. On board 2's **Getting Started** page (`http://192.168.4.1`), choose
    `Repeater-1` as the uplink and set a different AP SSID, e.g. `Repeater-2`.
    Save; board 2 reboots.
-4. **Change board 2's AP subnet afterwards.** Board 2's uplink address is in
-   board 1's `192.168.4.0/24`; if board 2's own AP also uses `192.168.4.1`,
-   routing breaks. On the serial console of board 2:
+2. **Then** change board 2's AP subnet on its serial console:
 
    ```text
    set_ap_ip 192.168.5.1
    restart
    ```
 
-   or use the AP IP field on the **Configuration** page. Do this *after*
-   the Getting Started page: that page resets the AP IP to `192.168.4.1`
+   or use the AP IP field on the **Configuration** page. Do it after the
+   Getting Started page, which resets the AP address to the build-time value
    (`setup_get_handler` in upstream `http_server.c`). `set_ap_ip` to a new
    `/24` also clears board 2's DHCP reservations and port mappings.
-5. Optional: run `set_wifi_country <CC>` on both boards so both use your
-   country's channel rules.
 
 ### What to expect
 

@@ -15,6 +15,7 @@
 [![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml) -->
 
 [Overview](#overview) ·
+[**Step-by-step guide**](docs/FLASHING_GUIDE.md) ·
 [Getting started](#getting-started) ·
 [Usage](#usage) ·
 [Architecture](docs/ARCHITECTURE.md) ·
@@ -36,9 +37,14 @@ DHCP lease, DNS and internet access through the board.
 The routing, DHCP, web UI and CLI come from
 [martin-ger/esp32_nat_router](https://github.com/martin-ger/esp32_nat_router)
 (pinned at v2.4.22, commit `119e0a3`). This repository adds what a careful
-deployment needs on top: a pinned toolchain, a reproducible build, four
-reviewed patches that close security and validation gaps, tests, and
-documentation for a beginner-friendly Windows workflow.
+deployment needs on top: a pinned toolchain, a reproducible build, five
+reviewed patches (security, validation, a build fix, and build-time Wi-Fi
+settings), tests, and documentation for a beginner-friendly Windows
+workflow.
+
+New here? Follow the **[step-by-step guide](docs/FLASHING_GUIDE.md)**: it
+covers flashing, where to enter your Wi-Fi names and passwords, what you can
+change later, and adding a second repeater.
 
 **Project status:** the firmware builds for the classic ESP32 with ESP-IDF
 v5.5.4 and all host-side tests pass. **It has not yet been run on a physical
@@ -64,6 +70,10 @@ Other ESP32 families (S2, S3, C3, C5, C6) are out of scope for this build.
 - **Secure first boot:** the setup network is WPA2/WPA3 with your own
   passphrase, and the web UI requires your own admin password from the first
   second. The build fails rather than produce an open device.
+- **All Wi-Fi settings in one file:** the repeater network, the admin
+  password and, optionally, the existing Wi-Fi to join go into
+  `config/secrets.local`, so a freshly flashed board can connect without the
+  web UI. One file per board for a second repeater.
 - **No secrets in git or logs:** credentials live in a git-ignored file; patch
   0002 stops upstream from logging Wi-Fi passwords and VPN keys.
 - **Input validation:** malformed AP IPs, short AP passwords (which upstream
@@ -87,15 +97,17 @@ Build output from this repository (Windows 11, ESP-IDF v5.5.4):
 ```text
 > python tools\repeater.py build
 [repeater] ESP-IDF 5.5.4 at C:\Users\nikad\esp\v5.5.4\esp-idf
+[repeater] no build-time uplink: choose the Wi-Fi to repeat at http://192.168.4.1 after flashing
 [repeater] exporting upstream 119e0a3d98a7 (v2.4.22) to build/src
 [repeater] applied 0001-secure-first-boot-defaults.patch
 [repeater] applied 0002-redact-credentials-in-web-logs.patch
 [repeater] applied 0003-validate-ssid-passphrase-ap-ip.patch
 [repeater] applied 0004-fix-mqtt-disabled-build.patch
+[repeater] applied 0005-build-time-uplink-and-ap-ip.patch
 [repeater] using pinned component versions from config/dependencies.lock
 Bootloader binary size 0x58d0 bytes. 0x1730 bytes (21%) free.
-esp32_nat_router.bin binary size 0x142390 bytes. Smallest app partition is 0x180000 bytes. 0x3dc70 bytes (16%) free.
-[repeater] app image 1319824 bytes = 83.9% of the 1572864-byte OTA slot
+esp32_nat_router.bin binary size 0x1423e0 bytes. Smallest app partition is 0x180000 bytes. 0x3dc20 bytes (16%) free.
+[repeater] app image 1319904 bytes = 83.9% of the 1572864-byte OTA slot
 [repeater] release images for esp32: build/release/esp32
 ```
 
@@ -156,16 +168,28 @@ C:\Users\$env:USERNAME\esp\v5.5.4\esp-idf\export.ps1   # once per terminal
 python tools\repeater.py init-secrets                   # writes config\secrets.local
 ```
 
-`config\secrets.local` (git-ignored) holds the setup SSID, the setup Wi-Fi
-password and the admin password, generated randomly. Open it to read or change
-them; the rules are in [`config/secrets.example`](config/secrets.example).
+`config\secrets.local` (git-ignored) is the one place for all names and
+passwords:
+
+| Line | Meaning |
+|--|--|
+| `CONFIG_REPEATER_SETUP_AP_SSID` / `_PASSWORD` | The network the repeater broadcasts (generated randomly; change freely) |
+| `CONFIG_REPEATER_ADMIN_PASSWORD` | Web UI login (generated randomly) |
+| `CONFIG_REPEATER_UPLINK_SSID` / `_PASSWORD` | Optional: your existing 2.4 GHz Wi-Fi, so the board connects on first boot |
+| `CONFIG_REPEATER_AP_IP` | Optional: the repeater's address, default `192.168.4.1` |
+
+Rules and examples: [`config/secrets.example`](config/secrets.example) and
+[step 4 of the guide](docs/FLASHING_GUIDE.md#step-4-enter-your-wi-fi-details).
 
 ### Build and flash
 
 ```powershell
 python tools\repeater.py build
-python tools\repeater.py flash -p COM5 --monitor   # your CP210x COM port
+python tools\repeater.py flash -p COM5 --erase --monitor   # your CP210x COM port
 ```
+
+`--erase` wipes settings saved on the board, so the values from your secrets
+file apply; settings saved on the board otherwise take precedence.
 
 If flashing stops at `Connecting....`, hold **BOOT** until writing starts.
 Step-by-step instructions, COM-port identification and the esptool
@@ -173,12 +197,15 @@ alternative: [docs/BUILD_AND_FLASH.md](docs/BUILD_AND_FLASH.md).
 
 ## Usage
 
-1. Join the setup network (SSID and password from `config\secrets.local`).
+If you set `CONFIG_REPEATER_UPLINK_SSID`, the board joins your Wi-Fi on its
+own: just connect your devices to the repeater network. Otherwise:
+
+1. Join the repeater network (SSID and password from `config\secrets.local`).
 2. Open `http://192.168.4.1`, log in with the admin password.
 3. On **Getting Started**, pick your home network (2.4 GHz), enter its
-   password, and choose the name and password of the network the board will
-   broadcast. Save; the board reboots and connects.
-4. Join the new network from your devices.
+   password, and optionally rename the repeater network. Save; the board
+   reboots and connects.
+4. Join the repeater network from your devices.
 
 Serial console (115200 baud, `python tools\repeater.py monitor -p COM5`):
 
@@ -188,7 +215,7 @@ Serial console (115200 baud, `python tools\repeater.py monitor -p COM5`):
 | `show config` | Stored configuration (prints passwords to the local console) |
 | `heap` | Free and minimum free heap |
 | `scan` | Visible networks with channel and RSSI |
-| `set_sta <ssid> <password>` / `set_ap <ssid> <password>` | Uplink / downlink credentials (then `restart`) |
+| `set_sta "<ssid>" "<password>"` / `set_ap "<ssid>" "<password>"` | Existing Wi-Fi / repeater network credentials (then `restart`) |
 | `set_router_password <password>` | Change the admin password |
 | `set_ap_ip <ip>` | Move the downstream subnet, e.g. `192.168.5.1` |
 | `set_wifi_country <CC>` / `set_tx_power <dBm>` | Regulatory country and transmit power limit |
@@ -246,7 +273,7 @@ Quick answers for the common cases; the full guide is
 ## Testing & quality
 
 ```powershell
-python -m unittest discover -s tests -v   # 32 tests: secrets validation, staging, guards
+python -m unittest discover -s tests -v   # 47 tests: secrets validation, staging, guards
 python tests\host\run_host_tests.py       # 47 checks of the firmware's input validation
 python tools\repeater.py build            # compile for the classic ESP32
 ```
@@ -254,7 +281,7 @@ python tools\repeater.py build            # compile for the classic ESP32
 | Check | Result (2026-10-23) |
 |--|--|
 | Firmware build, target `esp32`, ESP-IDF v5.5.4 | Exit 0; 2 warnings, both in the third-party WireGuard component |
-| Python tests | 32 passed; 62 % line coverage of `tools/repeater.py` (stdlib `trace`) |
+| Python tests | 47 passed; 66 % line coverage of `tools/repeater.py` (stdlib `trace`) |
 | Host C tests | 47 checks, 0 failures (MSVC `/W4 /WX`) |
 | Hardware tests | Not run: no board was connected ([TEST_PLAN.md](docs/TEST_PLAN.md)) |
 
@@ -269,7 +296,7 @@ Measured so far (build only):
 
 | Metric | Value |
 |--|--|
-| App image | 1,319,824 bytes, 83.9 % of the 1536 KiB OTA slot |
+| App image | 1,319,904 bytes, 83.9 % of the 1536 KiB OTA slot |
 | Bootloader | 22,736 bytes (0x58d0), 21 % of its region free |
 | Clean build / no-op build | 95 s / 3 s (Windows 11, ccache warm); first build 304 s |
 
@@ -291,6 +318,7 @@ to record the results.
 
 | Document | Contents |
 |--|--|
+| [FLASHING_GUIDE.md](docs/FLASHING_GUIDE.md) | **Start here:** step-by-step flashing, Wi-Fi settings, customisation, second board |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design, packet path, channel behaviour, state machine, security model |
 | [BUILD_AND_FLASH.md](docs/BUILD_AND_FLASH.md) | Toolchain install, build, COM port, flashing, measured results |
 | [TEST_PLAN.md](docs/TEST_PLAN.md) | Host and hardware tests with status |
