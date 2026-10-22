@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: satyaidk <nikadisatyanarayana@gmail.com>
+Date: Fri, 23 Oct 2026 02:06:08 +0530
+Subject: [PATCH 1/4] Secure first-boot defaults: encrypted setup AP and router
+ password
+
+Upstream boots with an open AP ("ESP32_NAT_Router", empty passphrase)
+and an unauthenticated web UI that listens on every interface. Anyone
+in radio range can join during setup and reconfigure the device, and
+the same happens again after every factory reset.
+
+Replace those defaults with build-time values from Kconfig:
+
+- REPEATER_SETUP_AP_SSID / REPEATER_SETUP_AP_PASSWORD become the AP
+  defaults used whenever NVS holds no AP settings.
+- REPEATER_ADMIN_PASSWORD is hashed into "web_password" when that key
+  has never been written. An explicit "" written by the owner counts
+  as set, so clearing the password later is respected.
+- REPEATER_WEB_UI_AP_ONLY (default y) writes web_bind=AP once, the
+  upstream Security wiki recommendation for home networks.
+
+_Static_assert rejects empty or out-of-range values at compile time, so
+an unconfigured build cannot produce an open device.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ main/Kconfig.projbuild  | 41 +++++++++++++++++++++++++++++
+ main/esp32_nat_router.c | 57 +++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 96 insertions(+), 2 deletions(-)
+
+diff --git a/main/Kconfig.projbuild b/main/Kconfig.projbuild
+index 9f3b4f7..78eae9f 100644
+--- a/main/Kconfig.projbuild
++++ b/main/Kconfig.projbuild
+@@ -10,6 +10,47 @@ menu "Example Configuration"
+ 
+ endmenu
+ 
++menu "Secure first-boot defaults"
++
++    config REPEATER_SETUP_AP_SSID
++        string "Setup AP SSID (1-31 bytes)"
++        default "ESP32_NAT_Router"
++        help
++            SSID broadcast while the device has no AP settings in NVS, i.e.
++            on first boot and after every factory reset. Replaces the
++            hard-coded upstream default.
++
++    config REPEATER_SETUP_AP_PASSWORD
++        string "Setup AP WPA2/WPA3 passphrase (8-63 characters)"
++        default ""
++        help
++            Passphrase of the setup AP. Upstream boots an open AP when no
++            password is stored; this build refuses to compile unless a valid
++            passphrase is supplied, so the device never starts unencrypted
++            unless the owner later chooses an open AP explicitly.
++            Supply it from the git-ignored config/secrets.local file, never
++            from a tracked file.
++
++    config REPEATER_ADMIN_PASSWORD
++        string "Initial web UI / remote console password (8-63 characters)"
++        default ""
++        help
++            Stored (salted SHA-256 hash) as the router password the first
++            time the device boots without one, so the web UI is never
++            reachable without authentication. Changing or clearing the
++            password later via set_router_password or the web UI is
++            respected; the default is only re-applied after a factory reset.
++
++    config REPEATER_WEB_UI_AP_ONLY
++        bool "Restrict web UI to the AP interface on first boot"
++        default y
++        help
++            Writes web_bind=ap on first boot so the web UI is not reachable
++            from the upstream (STA) network, following the upstream Security
++            wiki recommendation for home networks. Undo with 'web_ui bind all'.
++
++endmenu
++
+ menu "NAT Router Uplink"
+ 
+     choice UPLINK_TYPE
+diff --git a/main/esp32_nat_router.c b/main/esp32_nat_router.c
+index 31732eb..e33214d 100644
+--- a/main/esp32_nat_router.c
++++ b/main/esp32_nat_router.c
+@@ -59,6 +59,20 @@
+ #endif
+ #include "lwip/lwip_napt.h"
+ 
++/* Secure first-boot defaults (see "Secure first-boot defaults" in Kconfig).
++ * sizeof() of a string literal counts the terminating NUL, hence the +1s.
++ * Failing the build here is deliberate: an empty or short value would make
++ * the device fall back to an open AP or an unauthenticated web UI. */
++_Static_assert(sizeof(CONFIG_REPEATER_SETUP_AP_SSID) >= 1 + 1 &&
++               sizeof(CONFIG_REPEATER_SETUP_AP_SSID) <= 31 + 1,
++               "CONFIG_REPEATER_SETUP_AP_SSID must be 1-31 bytes (set it in config/secrets.local)");
++_Static_assert(sizeof(CONFIG_REPEATER_SETUP_AP_PASSWORD) >= 8 + 1 &&
++               sizeof(CONFIG_REPEATER_SETUP_AP_PASSWORD) <= 63 + 1,
++               "CONFIG_REPEATER_SETUP_AP_PASSWORD must be 8-63 characters (set it in config/secrets.local)");
++_Static_assert(sizeof(CONFIG_REPEATER_ADMIN_PASSWORD) >= 8 + 1 &&
++               sizeof(CONFIG_REPEATER_ADMIN_PASSWORD) <= 63 + 1,
++               "CONFIG_REPEATER_ADMIN_PASSWORD must be 8-63 characters (set it in config/secrets.local)");
++
+ #include "router_globals.h"
+ #include "lwip/ip_addr.h"
+ #include "esp_netif.h"
+@@ -1184,6 +1198,40 @@ char* param_set_default(const char* def_val) {
+     return retval;
+ }
+ 
++static bool config_key_exists(const char* key)
++{
++    nvs_handle_t nvs;
++    /* The namespace does not exist yet on a blank (or factory-reset) NVS. */
++    if (nvs_open(PARAM_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
++        return false;
++    }
++    nvs_type_t type;
++    esp_err_t err = nvs_find_key(nvs, key, &type);
++    nvs_close(nvs);
++    return err == ESP_OK;
++}
++
++/* Runs on every boot but only writes keys that have never been stored, so it
++ * acts once after flashing or a factory reset and never overrides a choice the
++ * owner made later (clearing the password stores "", which counts as set). */
++static void apply_first_boot_security_defaults(void)
++{
++    if (!config_key_exists("web_password")) {
++        if (set_web_password_hashed(CONFIG_REPEATER_ADMIN_PASSWORD) == ESP_OK) {
++            ESP_LOGI(TAG, "First boot: router password initialised from build configuration");
++        } else {
++            ESP_LOGE(TAG, "First boot: failed to store router password");
++        }
++    }
++#if CONFIG_REPEATER_WEB_UI_AP_ONLY
++    if (!config_key_exists("web_bind")) {
++        if (set_config_param_int("web_bind", RC_BIND_AP) == ESP_OK) {
++            ESP_LOGI(TAG, "First boot: web UI restricted to the AP interface");
++        }
++    }
++#endif
++}
++
+ /* Antenna (RF) switch control.
+  *
+  * Boards with both an on-board and an external antenna route the RF path
+@@ -1338,11 +1386,11 @@ void app_main(void)
+     get_config_param_blob("ap_mac", &ap_mac, 6);
+     get_config_param_str("ap_ssid", &ap_ssid);
+     if (ap_ssid == NULL) {
+-        ap_ssid = param_set_default("ESP32_NAT_Router");
++        ap_ssid = param_set_default(CONFIG_REPEATER_SETUP_AP_SSID);
+     }
+     get_config_param_str("ap_passwd", &ap_passwd);
+     if (ap_passwd == NULL) {
+-        ap_passwd = param_set_default("");
++        ap_passwd = param_set_default(CONFIG_REPEATER_SETUP_AP_PASSWORD);
+     }
+     get_config_param_str("ap_ip", &ap_ip);
+     if (ap_ip == NULL) {
+@@ -1616,6 +1664,11 @@ void app_main(void)
+     wifi_init(mac, ssid, ent_username, ent_identity, passwd, static_ip, subnet_mask, gateway_addr, ap_mac, ap_ssid, ap_passwd, ap_ip);
+ #endif
+ 
++    /* Not earlier: until esp_wifi_start() (inside wifi_init) the RNG is only
++     * pseudo-random (ESP-IDF random.rst), and the password salt should come
++     * from the true RNG. Must still run before start_webserver() reads web_bind. */
++    apply_first_boot_security_defaults();
++
+     // Initialise addressable LED strip (if configured)
+     led_strip_status_init();
+ 

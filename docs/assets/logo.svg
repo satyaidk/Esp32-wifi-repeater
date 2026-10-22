@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">ESP32 Wi-Fi repeater logo</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f6feb"/>
+      <stop offset="1" stop-color="#0b3d91"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- incoming signal (uplink) -->
+  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" opacity="0.9">
+    <path d="M30 44 A28 28 0 0 0 30 84"/>
+    <path d="M19 34 A42 42 0 0 0 19 94" opacity="0.6"/>
+  </g>
+  <!-- outgoing signal (downlink) -->
+  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" opacity="0.9">
+    <path d="M98 44 A28 28 0 0 1 98 84"/>
+    <path d="M109 34 A42 42 0 0 1 109 94" opacity="0.6"/>
+  </g>
+  <!-- chip -->
+  <g stroke="#ffffff" stroke-width="4" stroke-linecap="round">
+    <line x1="54" y1="40" x2="54" y2="46"/><line x1="64" y1="40" x2="64" y2="46"/><line x1="74" y1="40" x2="74" y2="46"/>
+    <line x1="54" y1="82" x2="54" y2="88"/><line x1="64" y1="82" x2="64" y2="88"/><line x1="74" y1="82" x2="74" y2="88"/>
+  </g>
+  <rect x="44" y="46" width="40" height="36" rx="6" fill="#ffffff"/>
+  <text x="64" y="69" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#0b3d91" text-anchor="middle">ESP32</text>
+</svg>

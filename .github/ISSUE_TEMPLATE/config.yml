@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Upstream firmware (esp32_nat_router)
+    url: https://github.com/martin-ger/esp32_nat_router/issues
+    about: Problems in upstream behaviour that this project's patches do not touch.

@@ -1,0 +1,26 @@
+# Build output: staged upstream sources, sdkconfig and firmware images.
+# The firmware embeds the setup passwords from config/secrets.local, so
+# nothing under build/ may ever be committed or published.
+/build/
+
+# Local secrets (copy config/secrets.example to config/secrets.local).
+/config/secrets.local
+*.local
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Host test binaries
+/tests/host/*.exe
+/tests/host/test_input_validation
+
+# Editors and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

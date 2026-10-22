@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: satyaidk <nikadisatyanarayana@gmail.com>
+Date: Fri, 23 Oct 2026 02:12:20 +0530
+Subject: [PATCH 3/4] cmd_router: validate SSID, AP passphrase and AP IP before
+ storing
+
+set_sta(), set_ap() and set_ap_ip() back both the serial CLI and the
+web UI, and stored whatever they were given:
+
+- set_ap_ip accepted any string; esp_ip4addr_aton() returns 0 for
+  garbage, so after the next reboot the AP came up on 0.0.0.0 with a
+  broken DHCP server and the web UI was unreachable.
+- set_ap accepted 1-7 character passwords, which wifi_init() turns into
+  an open AP: a typo silently removed encryption.
+- SSIDs longer than 31 bytes were truncated by strlcpy() in wifi_init()
+  into a name that can never match.
+
+Reject these inputs before touching NVS. An empty AP password remains
+the explicit way to run an open AP, and the uplink password keeps no
+lower bound (open and WEP networks). The helpers live in a header-only
+input_validation.h so they can be unit-tested on a host.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ components/cmd_router/cmd_router.c       |  35 +++++++-
+ components/cmd_router/input_validation.h | 107 +++++++++++++++++++++++
+ 2 files changed, 141 insertions(+), 1 deletion(-)
+ create mode 100644 components/cmd_router/input_validation.h
+
+diff --git a/components/cmd_router/cmd_router.c b/components/cmd_router/cmd_router.c
+index 98555ba..e5a3afd 100644
+--- a/components/cmd_router/cmd_router.c
++++ b/components/cmd_router/cmd_router.c
+@@ -44,6 +44,7 @@
+ #endif
+ #include "router_globals.h"
+ #include "cmd_router.h"
++#include "input_validation.h"
+ #include "pcap_capture.h"
+ #include "acl.h"
+ #include "remote_console.h"
+@@ -501,6 +502,20 @@ int set_sta(int argc, char **argv)
+     preprocess_string((char*)set_sta_arg.ssid->sval[0]);
+     preprocess_string((char*)set_sta_arg.password->sval[0]);
+ 
++    /* An empty uplink SSID is allowed: it is the unconfigured (setup) state. */
++    if (!sta_ssid_is_valid(set_sta_arg.ssid->sval[0])) {
++        printf("Invalid SSID: must be at most %d bytes.\n", SSID_MAX_STORED_LEN);
++        return 1;
++    }
++    /* No lower bound: the uplink may be open ("") or legacy WEP. Enterprise
++     * (EAP) passwords are not WPA passphrases and are not limited here. */
++    if (set_sta_arg.ent_username->count == 0 &&
++        strlen(set_sta_arg.password->sval[0]) > PASSPHRASE_MAX_LEN) {
++        printf("Invalid password: at most %d characters (64-digit hex PSKs are not supported).\n",
++               PASSPHRASE_MAX_LEN);
++        return 1;
++    }
++
+     err = nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs);
+     if (err != ESP_OK) {
+         return err;
+@@ -781,7 +796,19 @@ int set_ap(int argc, char **argv)
+     preprocess_string((char*)set_ap_args.ssid->sval[0]);
+     preprocess_string((char*)set_ap_args.password->sval[0]);
+ 
+-    if (strlen(set_ap_args.password->sval[0]) < 8) {
++    if (!ssid_is_valid(set_ap_args.ssid->sval[0])) {
++        printf("Invalid AP SSID: must be 1-%d bytes.\n", SSID_MAX_STORED_LEN);
++        return 1;
++    }
++    /* Upstream stored any password and wifi_init() turned anything shorter
++     * than 8 characters into an open AP, so a typo silently removed
++     * encryption. Only an explicit empty password opens the AP now. */
++    if (!ap_passphrase_is_valid(set_ap_args.password->sval[0])) {
++        printf("Invalid AP password: use 8-%d printable ASCII characters, or \"\" for an open AP.\n",
++               PASSPHRASE_MAX_LEN);
++        return 1;
++    }
++    if (strlen(set_ap_args.password->sval[0]) == 0) {
+         printf("AP will be open (no passwd needed).\n");
+     }
+ 
+@@ -840,6 +867,12 @@ int set_ap_ip(int argc, char **argv)
+ 
+     preprocess_string((char*)set_ap_ip_arg.ap_ip_str->sval[0]);
+ 
++    if (!ap_ip_is_valid(set_ap_ip_arg.ap_ip_str->sval[0])) {
++        printf("Invalid AP IP: use a dotted-quad unicast address with a last octet of 1-254 "
++               "(the AP subnet is a /24), e.g. 192.168.4.1.\n");
++        return 1;
++    }
++
+     // Get current AP IP to check if network is changing
+     char* old_ap_ip = NULL;
+     get_config_param_str("ap_ip", &old_ap_ip);
+diff --git a/components/cmd_router/input_validation.h b/components/cmd_router/input_validation.h
+new file mode 100644
+index 0000000..fb10a13
+--- /dev/null
++++ b/components/cmd_router/input_validation.h
+@@ -0,0 +1,107 @@
++/* Validation of SSIDs, AP passphrases and the AP IP address.
++ *
++ * Shared by the serial CLI and the web UI, which both end up in set_sta(),
++ * set_ap() and set_ap_ip(). The helpers are header-only and depend on the C
++ * standard library alone, so they can be unit-tested on a development host
++ * without ESP-IDF.
++ *
++ * SPDX-License-Identifier: MIT
++ */
++#pragma once
++
++#include <ctype.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* wifi_init() copies SSIDs with strlcpy() into 32-byte fields, so at most 31
++ * bytes survive: reject longer values instead of truncating them into an SSID
++ * that never matches. */
++#define SSID_MAX_STORED_LEN 31
++#define PASSPHRASE_MIN_LEN  8
++#define PASSPHRASE_MAX_LEN  63
++
++/* SSID of the SoftAP: an AP must broadcast a name. */
++static inline bool ssid_is_valid(const char *ssid)
++{
++    size_t len = strlen(ssid);
++    return len >= 1 && len <= SSID_MAX_STORED_LEN;
++}
++
++/* SSID of the uplink: empty means "no uplink configured", which is the
++ * first-boot state and how an owner returns the device to setup mode. */
++static inline bool sta_ssid_is_valid(const char *ssid)
++{
++    return strlen(ssid) <= SSID_MAX_STORED_LEN;
++}
++
++/* An empty passphrase is the explicit "open AP" choice; anything else must be
++ * a WPA passphrase, i.e. 8-63 printable ASCII characters. */
++static inline bool ap_passphrase_is_valid(const char *pw)
++{
++    size_t len = strlen(pw);
++    if (len == 0) {
++        return true;
++    }
++    if (len < PASSPHRASE_MIN_LEN || len > PASSPHRASE_MAX_LEN) {
++        return false;
++    }
++    for (const unsigned char *p = (const unsigned char *)pw; *p; p++) {
++        if (*p < 0x20 || *p > 0x7e) {
++            return false;
++        }
++    }
++    return true;
++}
++
++/* Strict dotted quad: esp_ip4addr_aton() returns 0 for garbage, and upstream
++ * stored the raw string anyway, which left the AP on 0.0.0.0 after reboot. */
++static inline bool parse_ipv4_strict(const char *s, uint8_t out[4])
++{
++    for (int i = 0; i < 4; i++) {
++        if (!isdigit((unsigned char)*s)) {
++            return false;
++        }
++        unsigned int value = 0;
++        int digits = 0;
++        while (isdigit((unsigned char)*s)) {
++            value = value * 10 + (unsigned int)(*s - '0');
++            if (++digits > 3 || value > 255) {
++                return false;
++            }
++            s++;
++        }
++        out[i] = (uint8_t)value;
++        if (i < 3) {
++            if (*s != '.') {
++                return false;
++            }
++            s++;
++        }
++    }
++    return *s == '\0';
++}
++
++/* wifi_init() always applies a /24 netmask to the AP address. */
++static inline bool ap_ip_is_valid(const char *s)
++{
++    uint8_t o[4];
++    if (!parse_ipv4_strict(s, o)) {
++        return false;
++    }
++    if (o[0] == 0 || o[0] == 127 || o[0] >= 224) {
++        return false;  /* "this" network, loopback, multicast/reserved */
++    }
++    if (o[0] == 169 && o[1] == 254) {
++        return false;  /* link-local */
++    }
++    return o[3] != 0 && o[3] != 255;  /* not the /24 network or broadcast address */
++}
++
++#ifdef __cplusplus
++}
++#endif

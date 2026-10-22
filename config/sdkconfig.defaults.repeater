@@ -1,0 +1,33 @@
+# Project overlay for the classic ESP32 (ESP-WROOM-32) DevKit V1, 4 MB flash.
+#
+# Layering (see tools/repeater.py):
+#   upstream sdkconfig.defaults  ->  this file  ->  config/secrets.local
+# Later files win. Only values that differ from upstream, or that routing
+# cannot work without, belong here. Edit this file instead of running
+# `idf.py menuconfig`: the sdkconfig is regenerated whenever an input changes.
+
+# --- Routing core -------------------------------------------------------------
+# Upstream enables these already. They are restated so that an upstream change
+# can never silently turn the router into an access point without forwarding.
+CONFIG_LWIP_IP_FORWARD=y
+CONFIG_LWIP_IPV4_NAPT=y
+CONFIG_LWIP_L2_TO_L3_COPY=y
+
+# --- Uplink -------------------------------------------------------------------
+# Wi-Fi STA uplink (not the WT32-ETH01 Ethernet variant).
+CONFIG_WIFI_STA_UPLINK=y
+
+# --- Optional features --------------------------------------------------------
+# MQTT / Home Assistant telemetry is not needed for a range extender. Compiling
+# it out removes a network client and shrinks the image.
+CONFIG_MQTT_HOMEASSISTANT=n
+
+# --- Secure first-boot defaults (patch 0001) -------------------------------------
+# Restrict the web UI to the AP side on first boot ("web_ui bind all" undoes it).
+# SSID and passwords come from config/secrets.local.
+CONFIG_REPEATER_WEB_UI_AP_ONLY=y
+
+# --- Console ------------------------------------------------------------------
+# The DevKit V1 exposes UART0 through its CP2102 USB-to-UART bridge.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200

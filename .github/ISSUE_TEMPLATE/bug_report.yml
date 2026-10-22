@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not build, flash or behave as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste passwords. Remove Wi-Fi passwords and the admin password from logs and `show config` output.
+        Security problems: use the Security tab ("Report a vulnerability") instead of an issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Stage
+      options:
+        - Build
+        - Flashing
+        - First boot / setup
+        - Uplink connection
+        - Clients / DHCP / DNS / internet
+        - Stability / reboots
+        - Range / power
+        - Documentation
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit of this repository
+      placeholder: git rev-parse --short HEAD
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Windows 11, ESP-IDF v5.5.4, board model and USB chip
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Build output or serial log (`python tools/repeater.py monitor -p COMx`), including the reset reason line `rst:0x...` if relevant.
+      render: text
