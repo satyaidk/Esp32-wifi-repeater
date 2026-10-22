@@ -27,6 +27,13 @@ All notable changes to this project are documented here. The format follows
   troubleshooting, range and power notes, two-board plan, learning path,
   third-party notes.
 
+### Fixed
+
+- CI could not find upstream commit `119e0a3`: `upstream/esp32_nat_router`
+  had been committed as ordinary files instead of a submodule. It is a pinned
+  submodule again, `repeater.py` now detects this layout and prints the
+  repair commands, and tests guard the submodule pointer.
+
 ### Not yet verified
 
 - No hardware test has been run (see `docs/TEST_PLAN.md`).

@@ -30,6 +30,7 @@ themselves there. Useful console commands: `show status`, `show config`,
 | `… does not apply to upstream …` | A patch no longer matches the pinned commit, usually after moving the submodule. See CONTRIBUTING.md. |
 | `cannot delete …\build\src` | A terminal, editor or serial monitor has that folder or a file in it open. Close it and retry. |
 | `upstream commit … is not available` | `git submodule update --init --recursive`. |
+| `upstream/esp32_nat_router is tracked as ordinary files, not as a git submodule` | The project's `.git` folder was recreated (deleted and re-initialised, or created by a GUI), so `git add` committed upstream as plain files and CI cannot find the pinned commit. Run the commands printed with the error, then commit. Avoid deleting `.git`: it also holds the submodule's repository (`.git/modules`). |
 
 ## Board not showing as a COM port
 

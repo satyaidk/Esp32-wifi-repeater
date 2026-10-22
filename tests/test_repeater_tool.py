@@ -284,6 +284,20 @@ class PrepareIntegrationTest(unittest.TestCase):
             repeater.SECRETS_FILE = original
 
 
+@unittest.skipUnless((REPO_ROOT / ".git").exists(), "not a git clone")
+class RepositoryLayoutTest(unittest.TestCase):
+    def test_upstream_is_a_pinned_submodule(self):
+        # Mode 160000 is a gitlink. Ordinary files here mean upstream was
+        # committed as a copy, which breaks CI and redistributes upstream code.
+        self.assertEqual(repeater.submodule_index_mode(), "160000")
+
+    def test_submodule_pointer_matches_pinned_commit(self):
+        import subprocess
+        out = subprocess.run(["git", "-C", str(REPO_ROOT), "ls-files", "--stage", "--", repeater.SUBMODULE_PATH],
+                             capture_output=True, text=True).stdout.split()
+        self.assertEqual(out[1], repeater.UPSTREAM_COMMIT)
+
+
 class CliTest(unittest.TestCase):
     def test_check_secrets_exit_codes(self):
         with tempfile.TemporaryDirectory() as tmp:

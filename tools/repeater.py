@@ -418,7 +418,32 @@ def is_safe_member(name: str) -> bool:
     return not path.is_absolute() and ".." not in path.parts and not name.startswith(("/", "\\"))
 
 
+SUBMODULE_PATH = "upstream/esp32_nat_router"
+
+
+def submodule_index_mode() -> Optional[str]:
+    """Git file mode of the upstream path in the project index ("160000" = submodule)."""
+    out = run(["git", "-C", str(REPO_ROOT), "ls-files", "--stage", "--", SUBMODULE_PATH],
+              check=False, capture=True).stdout
+    lines = out.splitlines()
+    return lines[0].split()[0] if lines else None
+
+
 def ensure_upstream_available() -> None:
+    if (REPO_ROOT / ".git").exists():
+        mode = submodule_index_mode()
+        if mode is not None and mode != "160000":
+            # Seen when the project's .git folder is recreated: the submodule's
+            # .git pointer dangles and `git add` commits upstream as plain files.
+            raise ToolError(
+                f"{SUBMODULE_PATH} is tracked as ordinary files, not as a git submodule, so the "
+                "pinned upstream history is not available. Convert it back and commit:\n"
+                f"    git rm -r -q --cached {SUBMODULE_PATH}\n"
+                f"    (move the {SUBMODULE_PATH} folder out of the repository)\n"
+                f"    git submodule add https://github.com/martin-ger/esp32_nat_router.git {SUBMODULE_PATH}\n"
+                f"    git -C {SUBMODULE_PATH} checkout {UPSTREAM_COMMIT}\n"
+                f"    git add {SUBMODULE_PATH}"
+            )
     if not (UPSTREAM_DIR / ".git").exists():
         if not (REPO_ROOT / ".git").exists():
             raise ToolError(
@@ -426,7 +451,7 @@ def ensure_upstream_available() -> None:
                 "(GitHub ZIP downloads omit submodules). Clone with: git clone --recursive <url>"
             )
         log("initialising the upstream submodule")
-        run(["git", "-C", str(REPO_ROOT), "submodule", "update", "--init", "--", "upstream/esp32_nat_router"])
+        run(["git", "-C", str(REPO_ROOT), "submodule", "update", "--init", "--", SUBMODULE_PATH])
     probe = run(["git", "-C", str(UPSTREAM_DIR), "cat-file", "-e", f"{UPSTREAM_COMMIT}^{{commit}}"],
                 check=False, capture=True)
     if probe.returncode != 0:
