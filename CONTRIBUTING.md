@@ -62,7 +62,10 @@ Then run the full check above. If the patch changes behaviour, update
 2. Update `UPSTREAM_COMMIT` and `UPSTREAM_VERSION` in `tools/repeater.py`.
 3. Rebase the patches in an LF clone (`git am -3`), regenerate them.
 4. Delete `config/dependencies.lock` if upstream's `main/idf_component.yml`
-   changed; the next build records a new one. Review the diff.
+   changed; the next `python tools/repeater.py build` records a new one.
+   Review the diff. Never regenerate the lock with a plain `idf.py` on
+   Windows: git-fetched components are hashed over their checked-out bytes,
+   and only `repeater.py` forces the LF checkout that matches Linux CI.
 5. For a new ESP-IDF, update `REQUIRED_IDF_VERSION`, the CI container tag and
    [ADR 0004](docs/adr/0004-pin-esp-idf-5-5-4.md).
 6. Rebuild, rerun the tests, update

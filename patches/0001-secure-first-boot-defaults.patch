@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: satyaidk <nikadisatyanarayana@gmail.com>
 Date: Fri, 23 Oct 2026 02:06:08 +0530
-Subject: [PATCH 1/4] Secure first-boot defaults: encrypted setup AP and router
+Subject: [PATCH 1/5] Secure first-boot defaults: encrypted setup AP and router
  password
 
 Upstream boots with an open AP ("ESP32_NAT_Router", empty passphrase)

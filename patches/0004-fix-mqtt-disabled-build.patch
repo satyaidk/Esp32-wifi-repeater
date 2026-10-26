@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: satyaidk <nikadisatyanarayana@gmail.com>
 Date: Fri, 23 Oct 2026 02:18:45 +0530
-Subject: [PATCH 4/4] mqtt_ha: fix configure with CONFIG_MQTT_HOMEASSISTANT
+Subject: [PATCH 4/5] mqtt_ha: fix configure with CONFIG_MQTT_HOMEASSISTANT
  disabled
 
 With the option off the component registers no sources, so

@@ -29,7 +29,10 @@ themselves there. Useful console commands: `show status`, `show config`,
 | `… must be 8-63 characters` from the C compiler (`_Static_assert`) | Someone bypassed `repeater.py` and ran `idf.py` directly without secrets. Use `repeater.py build`. |
 | `… does not apply to upstream …` | A patch no longer matches the pinned commit, usually after moving the submodule. See CONTRIBUTING.md. |
 | `cannot delete …\build\src` | A terminal, editor or serial monitor has that folder or a file in it open. Close it and retry. |
+| `The downloaded component "esp_wireguard" is corrupted` / `Hash of the component … does not match expected hash` | The lock file's hash was recorded from a checkout with different line endings (Windows CRLF vs Linux LF). Always build through `tools/repeater.py`, which forces LF checkouts for the component manager. If you regenerated `config/dependencies.lock` with a plain `idf.py` on Windows, restore it from git. |
+| Changed `config/secrets.local`, flashed, but the board still uses the old name/password | Expected: values saved on the board win over the file. Flash with `--erase` (wipes saved settings), hold BOOT 5 s for a factory reset, or change it on the web page. |
 | `upstream commit … is not available` | `git submodule update --init --recursive`. |
+| `upstream/esp32_nat_router is tracked as ordinary files, not as a git submodule` | The project's `.git` folder was recreated (deleted and re-initialised, or created by a GUI), so `git add` committed upstream as plain files and CI cannot find the pinned commit. Run the commands printed with the error, then commit. Avoid deleting `.git`: it also holds the submodule's repository (`.git/modules`). |
 
 ## Board not showing as a COM port
 

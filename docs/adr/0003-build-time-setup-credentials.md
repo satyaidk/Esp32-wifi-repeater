@@ -49,3 +49,14 @@ copied from `config/secrets.example`).
   recover them; NVS already holds Wi-Fi credentials in plaintext upstream, so
   physical access was never a protected boundary.
 - CI generates throwaway random credentials to compile.
+
+## Addendum (2026-10-23): optional uplink and AP address
+
+Owners asked to put the existing Wi-Fi's name and password in the same file
+instead of typing them into the web UI after flashing. Patch 0005 adds the
+optional keys `REPEATER_UPLINK_SSID`, `REPEATER_UPLINK_PASSWORD` and
+`REPEATER_AP_IP` with the same model: they apply only when NVS holds no
+value, values saved at runtime win, and a factory reset restores them. The
+uplink password then also lives in the firmware image, which strengthens the
+existing rule that `build/` output is private. Leaving the keys out keeps the
+original behaviour (choose the uplink on the Getting Started page).

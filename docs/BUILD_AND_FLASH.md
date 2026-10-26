@@ -2,7 +2,9 @@
 
 This guide installs the pinned toolchain, builds the firmware for the classic
 ESP32 and flashes an ESP32 DevKit V1. Windows (PowerShell) is the primary
-path; Linux/macOS differences are noted.
+path; Linux/macOS differences are noted. It is the technical reference; for a
+beginner walk-through including what to put in the secrets file, see
+[FLASHING_GUIDE.md](FLASHING_GUIDE.md).
 
 - [1. Install ESP-IDF v5.5.4](#1-install-esp-idf-v554)
 - [2. Get the source](#2-get-the-source)
@@ -68,11 +70,21 @@ Check the file at any time:
 python tools\repeater.py check-secrets
 ```
 
-| Value | Used for |
-|--|--|
-| `CONFIG_REPEATER_SETUP_AP_SSID` | Name of the setup Wi-Fi on first boot and after a factory reset |
-| `CONFIG_REPEATER_SETUP_AP_PASSWORD` | Its WPA2/WPA3 passphrase |
-| `CONFIG_REPEATER_ADMIN_PASSWORD` | Web UI login (`http://192.168.4.1`) |
+| Value | Used for | Required |
+|--|--|--|
+| `CONFIG_REPEATER_SETUP_AP_SSID` | Name of the network the board broadcasts | Yes |
+| `CONFIG_REPEATER_SETUP_AP_PASSWORD` | Its WPA2/WPA3 passphrase | Yes |
+| `CONFIG_REPEATER_ADMIN_PASSWORD` | Web UI login (`http://192.168.4.1`) | Yes |
+| `CONFIG_REPEATER_UPLINK_SSID` / `CONFIG_REPEATER_UPLINK_PASSWORD` | Existing 2.4 GHz Wi-Fi to join on first boot (patch 0005) | No |
+| `CONFIG_REPEATER_AP_IP` | The board's address; clients get the same /24 (default `192.168.4.1`) | No |
+
+These are starting values: they apply when the board has no saved settings
+(first boot, after `flash --erase`, after a factory reset). Values saved later
+on the device win.
+
+A second board uses its own file, e.g. `--secrets config/board2.local` on
+`init-secrets`, `check-secrets`, `build` and `flash`. Name such files
+`*.local`; the tool warns if a secrets file is not git-ignored.
 
 ## 4. Build
 
@@ -113,11 +125,14 @@ Linux: `/dev/ttyUSB0` (add yourself to the `dialout` group). macOS:
 ## 6. Flash and monitor
 
 ```powershell
-python tools\repeater.py flash -p COM5 --monitor
+python tools\repeater.py flash -p COM5 --erase --monitor
 ```
 
-Replace `COM5` with your port. This runs `idf.py flash monitor` with the
-project's build directory and sdkconfig. Flashing uses 460800 baud (ESP-IDF
+Replace `COM5` with your port. This runs `idf.py erase-flash flash monitor`
+with the project's build directory and sdkconfig. `--erase` wipes the whole
+flash first, including settings saved by earlier firmware, so the values from
+your secrets file apply; leave it out to keep the board's saved settings when
+updating. Flashing uses 460800 baud (ESP-IDF
 default; lower with `-b 115200` if it is unreliable). The monitor runs at
 **115200 baud**; exit with `Ctrl+]`.
 
@@ -205,18 +220,19 @@ Recorded on 2026-10-23 on Windows 11 Home (10.0.26300), building from
 
 | Item | Value |
 |--|--|
-| Upstream | `martin-ger/esp32_nat_router` `119e0a3d98a7c580a0fd119fde27d189cda25d39` (v2.4.22) + patches 0001–0004 |
+| Upstream | `martin-ger/esp32_nat_router` `119e0a3d98a7c580a0fd119fde27d189cda25d39` (v2.4.22) + patches 0001–0005 |
 | ESP-IDF | v5.5.4, commit `735507283d5b2f9fb363a1901172dbd9e847945d` |
 | Compiler | `xtensa-esp-elf-gcc` 14.2.0 (crosstool-NG `esp-14.2.0_20260121`) |
 | Build tools | CMake 3.30.2, Ninja 1.12.1, ccache 4.12.1, esptool 4.12.0, esp-idf-kconfig 2.5.4, idf-component-manager 2.5.2, Python 3.11.0 |
 | Managed components | `esp_wireguard` git `02a24fad29365db09e0088df2f8c4414632fe35a`, `espressif/mdns` 1.14.0, `espressif/led_strip` 3.1.1 ([`config/dependencies.lock`](../config/dependencies.lock)) |
 | Target | `esp32` (`CONFIG_IDF_TARGET="esp32"`), DIO, 40 MHz, 4 MB flash |
 | Result | `idf.py build` exit code 0 |
-| App image | 1,319,824 bytes (0x142390) = 83.9 % of the 1,572,864-byte `ota_0` slot; ESP-IDF reports 0x3dc70 bytes (16 %) free |
+| App image | 1,319,904 bytes (0x1423e0) = 83.9 % of the 1,572,864-byte `ota_0` slot; ESP-IDF reports 0x3dc20 bytes (16 %) free (with patch 0005; 1,319,824 bytes before it) |
 | Bootloader | 0x58d0 bytes; 0x1730 bytes (21 %) free |
 | Build time, first build on this machine | 304 s (includes component downloads, cold compiler cache) |
 | Build time, after `repeater.py clean` | 95 s (ccache warm) |
 | Build time, nothing changed | 3 s |
+| Build time, after a patch or lock change (re-export, ccache warm) | 157 s |
 | Compiler warnings | 2, both in the third-party `esp_wireguard` component (see below); none in upstream code or the patches |
 
 Image checksums differ between builds even from identical inputs: upstream's
@@ -249,8 +265,14 @@ that need a board were not run because none was connected.
 | `python tools\repeater.py clean` then `build` | 0 / 0 | Results above |
 | `python tools\repeater.py build` (no changes) | 0 | 3 s, `upstream sources up to date` |
 | `python tools\repeater.py flash -p COM99` (port that does not exist) | 2 | esptool invoked with the expected offsets; failed only at `Could not open COM99` (expected) |
-| `python -m unittest discover -s tests -v` | 0 | 28 tests OK |
+| `python -m unittest discover -s tests -v` | 0 | 28 tests OK at first; 47 tests OK after patch 0005 and the lock fix |
 | `python tests\host\run_host_tests.py` | 0 | MSVC `/W4 /WX`: 47 checks, 0 failures |
 | ESP-IDF `kconfgen` with `$HOME`, `$(…)`, `${…}`, `#`, `%`, backtick, UTF-8 in values | 0 | Values copied literally to `sdkconfig` and `sdkconfig.h` |
 | `xtensa-esp32-elf-gcc -std=gnu17 -Wall -Werror=all` on a literal containing `??(` | 1 | `-Werror=trigraphs` → validator now rejects trigraphs |
+| GitHub Actions run `39858092916` (firmware job, Linux container) | 2 | `The downloaded component "esp_wireguard" is corrupted`: the lock held the hash of a Windows CRLF checkout (`d6a3aefc…`) |
+| `hash_dir` (idf-component-manager) on a CRLF and an LF checkout of `esp_wireguard` `02a24fad` | 0 | `d6a3aefc…` (CRLF) vs `d3845c88…` (LF): cause confirmed |
+| `python tools
+epeater.py build` with LF-forced git and the LF hash in the lock (Windows) | 0 | Component verified; files on disk LF; `hash_dir` = `d3845c88…` |
+| `python toolsepeater.py build --secrets <test file>` with uplink `Example Home WiFi` and `CONFIG_REPEATER_AP_IP="192.168.5.1"` (separate `REPEATER_BUILD_DIR`) | 0 | Values in `sdkconfig.h` and the image (1,319,952 bytes); `192.168.4.1` remains only in display text (an error-message example and two form placeholders) |
+| `xtensa-esp32-elf-gcc -std=gnu17 -Werror=all` on patch 0005's `_Static_assert`s | 0/1 | 3 valid cases compile, 4 invalid ones fail with their message |
 | Hardware flashing, first boot, routing, reconnect, factory reset | — | **Not run: no ESP32 connected** |

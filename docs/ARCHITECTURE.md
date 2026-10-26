@@ -63,7 +63,7 @@ development, and its benefits (same subnet, discovery protocols) are not
 requirements here. Full reasoning: [ADR 0001](adr/0001-nat-router-over-layer2-bridge.md).
 
 The project does not fork or rewrite upstream. It pins upstream as a git
-submodule and applies four reviewed patches at build time
+submodule and applies five reviewed patches at build time
 ([ADR 0002](adr/0002-upstream-submodule-with-patch-queue.md)):
 
 | Patch | Why |
@@ -72,6 +72,7 @@ submodule and applies four reviewed patches at build time
 | `0002-redact-credentials-in-web-logs` | The `/config` and `/vpn` handlers logged the raw query string, which contains Wi-Fi passwords and WireGuard keys, to the serial console and syslog. |
 | `0003-validate-ssid-passphrase-ap-ip` | `set_ap_ip garbage` was stored and left the AP on `0.0.0.0` after reboot; 1–7 character AP passwords silently produced an open AP; SSIDs over 31 bytes were truncated. Shared by CLI and web UI. |
 | `0004-fix-mqtt-disabled-build` | The MQTT component broke CMake configure when compiled out, which this project does. |
+| `0005-build-time-uplink-and-ap-ip` | Optional build-time values from `secrets.local`: the existing Wi-Fi to join (used whenever nothing is saved on the board) and the AP address. Upstream hard-codes `192.168.4.1`, which a second board chained to the first cannot use. |
 
 ## 4. System overview
 
@@ -248,7 +249,7 @@ flowchart TB
     Sub["upstream/esp32_nat_router<br/>(git submodule, pinned 119e0a3, never edited)"]
     Arc["git archive 119e0a3<br/>(LF line endings)"]
     Src["build/src<br/>(disposable staging tree)"]
-    P["patches/0001..0004"]
+    P["patches/0001..0005"]
     D1["upstream sdkconfig.defaults"]
     D2["config/sdkconfig.defaults.repeater"]
     D3["config/secrets.local<br/>(git-ignored)"]
@@ -273,11 +274,18 @@ the component lock file changes.
 
 ESP-IDF applies `sdkconfig.defaults` only when it creates a new `sdkconfig`.
 The tool hashes all configuration inputs and regenerates the `sdkconfig` when
-one changes, so editing `config/secrets.local` always takes effect.
+one changes, so editing `config/secrets.local` always takes effect in the next
+build. On the device, settings saved in NVS still take precedence over these
+build-time values; `flash --erase` or a factory reset brings them back
+([FLASHING_GUIDE.md, step 9](FLASHING_GUIDE.md#step-9-change-settings-later)).
 
 Component versions fetched by the ESP-IDF component manager (mDNS, LED strip,
 WireGuard) are pinned in [`config/dependencies.lock`](../config/dependencies.lock),
-which is copied into the staging tree before each build.
+which is copied into the staging tree before each build. The lock records a
+hash of each component's files. `esp_wireguard` is fetched with git, so that
+hash depends on line endings: `repeater.py` runs `idf.py` with
+`core.autocrlf=false` forced through `GIT_CONFIG_COUNT`, so Windows checks it
+out with LF exactly like Linux and the same lock verifies everywhere.
 
 ## 10. Resource budget
 
