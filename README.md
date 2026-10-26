@@ -266,9 +266,13 @@ Quick answers for the common cases; the full guide is
 │   ├── test_repeater_tool.py         # unit + staging integration tests
 │   └── host/                         # host C tests for the firmware's input validation
 ├── upstream/esp32_nat_router/        # git submodule, pinned, never edited
-├── docs/                             # architecture, ADRs, guides, test plan
+├── docs/                             # guides, architecture, ADRs, test plan
+│   └── PROJECT_STRUCTURE.md          # detailed folder and file map
 └── build/                            # generated: staged source, sdkconfig, images (git-ignored)
 ```
+
+See the [detailed project structure](docs/PROJECT_STRUCTURE.md) for the
+repository map and generated-file notes.
 
 ## Testing & quality
 
